@@ -30,12 +30,20 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  sqflite: ^2.4.3 #base de datos local
   path: ^1.8.3   #encuentra directorios
   http: ^1.1.0   #para consumir la API del clima
   geolocator: ^10.1.0 #para el GPS
   google_sign_in: ^6.2.1 #conecta credenciales de google
 
+ # Base de datos local SQLite para guardar ciudades favoritas
+  sqflite: ^2.3.0
+
+
+  # Persistencia de preferencias del usuario por correo (Login/Customización)
+  shared_preferences: ^2.2.2
+
+
+ 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8

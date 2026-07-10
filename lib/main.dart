@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:pronostico_del_clima/servicios/database_helper.dart';
 import 'package:pronostico_del_clima/servicios/weather_service.dart';
 
@@ -14,12 +15,9 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'SkyCast Clima',
+      title: 'ClimaApp',
       debugShowCheckedModeBanner: false,
-      // Forzamos un tema oscuro base para que no haya problemas de contraste
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF0F172A),
-      ),
+      theme: ThemeData(brightness: Brightness.dark, primarySwatch: Colors.blue),
       home: const WeatherHomeScreen(),
     );
   }
@@ -70,12 +68,12 @@ class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
   @override
   void initState() {
     super.initState();
-    _loadFavorites();
+    // Cargamos favoritos iniciales vacíos, se cargarán al iniciar sesión por correo
   }
 
-  // Carga las ciudades de SQLite
-  Future<void> _loadFavorites() async {
-    final list = await _dbHelper.getFavorites();
+  // Carga las ciudades de SQLite filtradas por correo
+  Future<void> _loadFavoritesForUser(String email) async {
+    final list = await _dbHelper.getFavorites(email);
     if (!mounted) return;
     setState(() {
       _favorites = list;
@@ -112,25 +110,38 @@ class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
   // Eliminar cuenta iniciada y sus datos SQLite de forma permanente
   Future<void> _deleteAccount() async {
     try {
+      final email = _emailController.text.trim();
+
       // 1. Desconectar Google Sign In si está activo
       final GoogleSignIn googleSignIn = GoogleSignIn();
       if (await googleSignIn.isSignedIn()) {
         await googleSignIn.disconnect();
       }
 
-      // 2. Borrar base de datos local (SQLite favoritos)
+      // 2. Borrar favoritos del usuario actual en la base de datos local SQLite
       final db = await _dbHelper.database;
-      await db.delete('favorites');
+      await db.delete('favorites', where: 'email = ?', whereArgs: [email]);
+
+      // 3. Eliminar SharedPreferences del perfil de este correo
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('skycast_${email}_has_profile');
+      await prefs.remove('skycast_${email}_account_type');
+      await prefs.remove('skycast_${email}_personal_activity');
+      await prefs.remove('skycast_${email}_personal_schedule');
+      await prefs.remove('skycast_${email}_personal_recs');
+      await prefs.remove('skycast_${email}_business_schedule');
+      await prefs.remove('skycast_${email}_business_category');
+      await prefs.remove('skycast_${email}_business_recs');
 
       if (!mounted) return;
 
-      // 3. Limpiar variables de estado de la sesión
+      // 4. Limpiar variables de estado de la sesión
       setState(() {
         _emailController.clear();
         _passwordController.clear();
-        _personalActivityController.clear();
-        _personalScheduleController.clear();
-        _businessScheduleController.clear();
+        _personalActivityController.text = 'Estudiante';
+        _personalScheduleController.text = 'Mañana (8:00 - 14:00)';
+        _businessScheduleController.text = 'Lunes a Viernes (9:00 - 18:00)';
         _favorites.clear();
         _weatherData = null;
         _isGoogleUser = false;
@@ -139,9 +150,7 @@ class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-            'Cuenta de Google y datos SQLite eliminados permanentemente.',
-          ),
+          content: Text('Cuenta y datos locales eliminados permanentemente.'),
           backgroundColor: Colors.redAccent,
         ),
       );
@@ -176,6 +185,7 @@ class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
       if (data != null) {
         _weatherData = data;
         _currentScreen = AppScreen.weatherDetails; // Ir a la pantalla 4
+        _cityController.clear(); // Limpia el buscador después de consultar
       } else {
         _errorMessage = "No se encontraron datos para '$city'";
       }
@@ -245,24 +255,28 @@ class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
   Future<void> _addCityToFavorites() async {
     if (_weatherData == null) return;
     final cityName = _weatherData!['name'];
-    if (cityName != null) {
-      await _dbHelper.insertFavorite(cityName);
+    final email = _emailController.text.trim();
+    if (cityName != null && email.isNotEmpty) {
+      await _dbHelper.insertFavorite(cityName, email);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('$cityName guardada en favoritas SQLite')),
       );
-      _loadFavorites();
+      _loadFavoritesForUser(email);
     }
   }
 
   // Eliminar favorita (SQLite)
   Future<void> _removeCityFromFavorites(String cityName) async {
-    await _dbHelper.deleteFavorite(cityName);
-    if (!mounted) return;
-    _loadFavorites();
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('$cityName eliminada de favoritas')));
+    final email = _emailController.text.trim();
+    if (email.isNotEmpty) {
+      await _dbHelper.deleteFavorite(cityName, email);
+      if (!mounted) return;
+      _loadFavoritesForUser(email);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$cityName eliminada de favoritas')),
+      );
+    }
   }
 
   Widget _buildWeatherIcon(String? condition, double size) {
@@ -285,33 +299,64 @@ class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
   }
 
   // Completar inicio de sesión en Flutter
-  void _submitLogin() {
+  Future<void> _submitLogin() async {
     setState(() {
       _loginError = null;
     });
-    if (_emailController.text.trim().isEmpty ||
-        _passwordController.text.trim().isEmpty) {
+    final email = _emailController.text.trim();
+    if (email.isEmpty || _passwordController.text.trim().isEmpty) {
       setState(() {
         _loginError = "Por favor escribe tu correo y contraseña";
       });
       return;
     }
-    if (!_emailController.text.contains('@')) {
+    if (!email.contains('@')) {
       setState(() {
         _loginError = "Por favor escribe un correo válido";
       });
       return;
     }
-    setState(() {
-      _currentScreen = AppScreen.questionnaire;
-    });
+
+    // --- LÓGICA DE CUENTAS INDEPENDIENTES (SharedPreferences) ---
+    final prefs = await SharedPreferences.getInstance();
+    final alreadyExists =
+        prefs.getBool('skycast_${email}_has_profile') ?? false;
+
+    if (alreadyExists) {
+      setState(() {
+        _accountType =
+            prefs.getString('skycast_${email}_account_type') ?? 'personal';
+        _personalActivityController.text =
+            prefs.getString('skycast_${email}_personal_activity') ??
+            'Estudiante';
+        _personalScheduleController.text =
+            prefs.getString('skycast_${email}_personal_schedule') ??
+            'Mañana (8:00 - 14:00)';
+        _personalRecs = prefs.getBool('skycast_${email}_personal_recs') ?? true;
+        _businessScheduleController.text =
+            prefs.getString('skycast_${email}_business_schedule') ??
+            'Lunes a Viernes (9:00 - 18:00)';
+        _businessCategory =
+            prefs.getString('skycast_${email}_business_category') ?? 'Comida';
+        _businessRecs = prefs.getBool('skycast_${email}_business_recs') ?? true;
+
+        _currentScreen = AppScreen.search; // Ingresa directo al panel
+      });
+      _loadFavoritesForUser(email);
+    } else {
+      // Nuevo usuario: debe personalizar
+      setState(() {
+        _currentScreen = AppScreen.questionnaire;
+      });
+    }
   }
 
   // Completar cuestionario de personalización en Flutter
-  void _submitQuestionnaire() {
+  Future<void> _submitQuestionnaire() async {
     setState(() {
       _loginError = null;
     });
+    final email = _emailController.text.trim();
     if (_accountType == 'personal') {
       if (_personalActivityController.text.trim().isEmpty ||
           _personalScheduleController.text.trim().isEmpty) {
@@ -330,6 +375,34 @@ class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
         return;
       }
     }
+
+    // --- GUARDAR PERSONALIZACIÓN PARA ESTA CUENTA ---
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('skycast_${email}_has_profile', true);
+    await prefs.setString('skycast_${email}_account_type', _accountType);
+    if (_accountType == 'personal') {
+      await prefs.setString(
+        'skycast_${email}_personal_activity',
+        _personalActivityController.text,
+      );
+      await prefs.setString(
+        'skycast_${email}_personal_schedule',
+        _personalScheduleController.text,
+      );
+      await prefs.setBool('skycast_${email}_personal_recs', _personalRecs);
+    } else {
+      await prefs.setString(
+        'skycast_${email}_business_schedule',
+        _businessScheduleController.text,
+      );
+      await prefs.setString(
+        'skycast_${email}_business_category',
+        _businessCategory,
+      );
+      await prefs.setBool('skycast_${email}_business_recs', _businessRecs);
+    }
+
+    _loadFavoritesForUser(email);
     setState(() {
       _currentScreen = AppScreen.search;
     });
@@ -465,7 +538,7 @@ class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
                 padding: EdgeInsets.symmetric(horizontal: 10),
                 child: Text(
                   'O',
-                  style: TextStyle(color: Colors.white, fontSize: 10),
+                  style: TextStyle(color: Colors.white54, fontSize: 10),
                 ),
               ),
               Expanded(child: Divider(color: Colors.white24)),
@@ -814,7 +887,7 @@ class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
                 child: ElevatedButton(
                   onPressed: _submitQuestionnaire,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
+                    backgroundColor: const Color(0xFF10B981),
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     shape: RoundedRectangleBorder(
@@ -897,7 +970,7 @@ class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
               const Icon(Icons.auto_awesome, color: Colors.amber, size: 16),
               const SizedBox(width: 6),
               Text(
-                'Sugerencia SkyCast (${_accountType == 'personal' ? 'Personal' : 'Negocio'})',
+                'Sugerencia ClimaApp (${_accountType == "personal" ? "Personal" : "Negocio"})',
                 style: const TextStyle(
                   color: Colors.amber,
                   fontWeight: FontWeight.bold,
@@ -996,7 +1069,7 @@ class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
           height: 105,
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
-
+            physics: const BouncingScrollPhysics(),
             itemCount: hours.length,
             itemBuilder: (context, index) {
               final h = hours[index];
@@ -1222,13 +1295,13 @@ class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
-                    'SkyCast',
+                    'ClimaApp',
                     style: TextStyle(
                       color: Colors.white,
                       fontSize: 34,
@@ -1237,7 +1310,7 @@ class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
                     ),
                   ),
                   Text(
-                    'Hola, ${_emailController.text.split('@')[0]}',
+                    "Hola, ${_emailController.text.split('@')[0]}",
                     style: const TextStyle(
                       color: Colors.white70,
                       fontSize: 13,
@@ -1417,7 +1490,7 @@ class _WeatherHomeScreenState extends State<WeatherHomeScreen> {
                           child: Text(
                             'Aún no tienes favoritas en SQLite',
                             style: TextStyle(
-                              color: Colors.white,
+                              color: Colors.white54,
                               fontSize: 12,
                               fontStyle: FontStyle.italic,
                             ),
