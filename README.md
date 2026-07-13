@@ -4,9 +4,9 @@ El sistema combina el procesamiento de lenguaje natural de modelos fundacionales
 ## 🔗 Demo en Vivo    
 * 🎥 Demostración en Video: https://drive.google.com/file/d/1H-xkIfDBZLKbA4Iuh8wi_SM20o0Bguq_/view?usp=sharing 
 ## 🛠️ Stack Tecnológico & Arquitectura
-* Framework & Lenguaje: Flutter (Dart)   
-* Generative AI: Google AI Studio API (Gemini Models)
-* Autenticación & Usuarios: Firebase Auth (Email & Google Sign-In)
+* Framework & Lenguaje: Flutter (Dart).
+* Generative AI: Google AI Studio API (Gemini Models).
+* Autenticación & Usuarios: Simula autenticación con Google Sign-In.
 * Base de Datos Local: SQLite (sqflite) para caché de favoritos.
 * Geolocalización: geolocator para posicionamiento GPS en tiempo real.
 ## ⚙️ Funcionalidades Clave
